@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liq Live – thanh lý Binance realtime</title>
+<style>
+:root{--bg:#f6f5f2;--fg:#17181a;--mut:#6a6e75;--card:#fff;--bd:#dedcd6;--red:#c62f2f;--grn:#12803f;--amb:#a86a00}
+@media (prefers-color-scheme:dark){:root{--bg:#101214;--fg:#e9eaec;--mut:#92979e;--card:#181b1f;--bd:#2a2f35;--red:#f26d6d;--grn:#4cd68a;--amb:#f0b84a}}
+html,body{background:var(--bg);color:var(--fg);margin:0}
+body{font:15px/1.5 system-ui,sans-serif;padding:14px;max-width:680px;margin:0 auto}
+h1{font-size:20px;margin:4px 0}
+.mut{color:var(--mut);font-size:13px}
+.row{display:flex;gap:8px;margin:8px 0}
+select{font:inherit;padding:9px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg);flex:1}
+.box{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin:10px 0}
+.verdict{border-left:5px solid var(--amb)}.verdict.up{border-color:var(--grn)}.verdict.dn{border-color:var(--red)}
+.verdict b.t{font-size:18px;display:block}
+.k{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--bd)}
+.k:last-child{border:0}
+.r{color:var(--red)}.g{color:var(--grn)}
+.bk{display:grid;grid-template-columns:44px 1fr 1fr;gap:6px;align-items:center;font-size:12px;margin:2px 0}
+.bl,.bs{height:12px;border-radius:3px}.bl{background:var(--red);margin-left:auto}.bs{background:var(--grn)}
+.bkL{display:flex}
+h2{font-size:14px;margin:0 0 6px}
+#st{font-size:13px;font-weight:600}
+</style></head><body>
+<h1>Liq Live</h1>
+<div id="st" class="mut">Đang kết nối Binance…</div>
+<div class="row">
+<select id="win" aria-label="Khung thời gian"><option value="15">15 phút cuối</option><option value="30" selected>30 phút cuối</option><option value="60">60 phút cuối</option><option value="180">3 giờ cuối</option></select>
+<select id="min" aria-label="Ngưỡng tối thiểu"><option value="1e4">Từ $10K</option><option value="25000">Từ $25K</option><option value="50000" selected>Từ $50K</option><option value="100000">Từ $100K</option></select>
+</div>
+<div id="out"></div>
+<p class="mut">Heuristic từ luồng thanh lý, không phải dự đoán chắc chắn. Binance chỉ đẩy tối đa 1 lệnh/giây/coin nên số liệu có thể thấp hơn thực tế. Phải để tab mở mới thu được log. Dữ liệu 3 giờ cuối được lưu trong trình duyệt.</p>
+<script>
+const $=id=>document.getElementById(id);
+let ev=[],got=0,lastMsg=0;
+try{ev=JSON.parse(localStorage.getItem('liqlive')||'[]')}catch(e){}
+const f=n=>n>=1e6?(n/1e6).toFixed(2)+'M':(n/1e3).toFixed(0)+'K';
+const tm=b=>new Date(b*6e4).toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',hour12:false});
+function status(t,c){const s=$('st');s.textContent=t;s.className=c}
+function conn(){
+  const ws=new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
+  ws.onopen=()=>status('Đang nhận dữ liệu realtime','g');
+  ws.onmessage=m=>{
+    const d=JSON.parse(m.data);
+    (Array.isArray(d)?d:[d]).forEach(x=>{
+      const o=x.o;if(!o)return;
+      const p=+o.ap||+o.p,q=+o.z||+o.q,usd=p*q;if(!(usd>=1e4))return;
+      ev.push({t:(o.T||x.E)/6e4,c:o.s.replace(/(USDT|USDC|BUSD)$/,''),side:o.S=='SELL'?'long':'short',usd,p});
+      got++;lastMsg=Date.now();
+    });
+  };
+  ws.onclose=()=>{status('Mất kết nối, đang nối lại…','r');setTimeout(conn,3000)};
+  ws.onerror=()=>ws.close();
+}
+const sum=(a,s)=>a.filter(e=>e.side==s).reduce((x,e)=>x+e.usd,0);
+const dm=a=>{const L=sum(a,'long'),S=sum(a,'short');return L+S?(S-L)/(S+L):0};
+function brk(sub,now){
+  const R=sub.filter(e=>e.t>=now-5),P=sub.filter(e=>e.t<now-5&&e.t>=now-15);
+  if(R.length<2)return `<div class="box"><h2>Chế độ break</h2><b class="t" style="font-size:18px">ĐỨNG NGOÀI – chưa có nhịp break</b><div class="mut">Chưa đủ lệnh thanh lý trong 5 phút qua. Hạ ngưỡng xuống $25K nếu muốn nhạy hơn.</div></div>`;
+  const s=sum(R,'short')>=sum(R,'long')?'short':'long',o=s=='short'?'long':'short',up=s=='short';
+  const rS=sum(R,s),pr=P.length?sum(P,s)/10:0,acc=pr?rS/5/pr:2;
+  const by={};R.filter(e=>e.side==s).forEach(e=>by[e.c]=(by[e.c]||0)+e.usd);
+  const br=Object.keys(by).length,opp=sum(R,o)/rS,top=Object.keys(by).sort((a,b)=>by[b]-by[a])[0];
+  const te=sub.filter(e=>e.c==top&&e.side==s&&e.t>=now-15);
+  const ext=up?Math.max(...te.map(e=>e.p)):Math.min(...te.map(e=>e.p)),pb=Math.abs(ext-te[te.length-1].p)/ext*100;
+  const C=[[acc>=1.2,'Thanh lý đang tăng tốc'],[br>=3,'Lan nhiều coin ('+br+')'],[opp<.25,'Phe ngược chưa bị quét'],[pb<.1,'Giá chưa lùi khỏi đỉnh thanh lý']].filter(x=>x[0]);
+  const X=[[acc<=.6,'Thanh lý yếu dần'],[br<=1,'Chỉ 1 coin (squeeze cục bộ)'],[opp>=.4,'Phe ngược bắt đầu bị quét (vào muộn)'],[pb>=.2,'Giá đã lùi '+pb.toFixed(2)+'% khỏi đỉnh thanh lý']].filter(x=>x[0]);
+  let h,dir,stop;
+  if(C.length-X.length>=2){dir=up?'LONG':'SHORT';h='FOMO theo – '+dir;stop='Cắt nếu phe ngược bắt đầu bị quét hoặc thanh lý ngừng chạy.'}
+  else if(X.length-C.length>=2){dir=up?'SHORT':'LONG';h='ĐẢO CHIỀU – '+dir;stop=`Cắt ngay nếu ${top} ${up?'vượt lên trên':'thủng xuống dưới'} $${ext}.`}
+  else{h='ĐỨNG NGOÀI – tín hiệu lẫn lộn';stop=''}
+  const cl=dir=='LONG'?'up':dir=='SHORT'?'dn':'';
+  return `<div class="box verdict ${cl}"><h2>Chế độ break: ${up?'đang chạy LÊN (short bị nướng)':'đang chạy XUỐNG (long bị nướng)'}</h2><b class="t">${h}</b>
+  ${C.length?`<div class="mut">Ủng hộ theo trend: ${C.map(x=>x[1]).join('; ')}</div>`:''}${X.length?`<div class="mut">Ủng hộ đảo chiều: ${X.map(x=>x[1]).join('; ')}</div>`:''}${stop?`<div style="margin-top:4px">${stop}</div>`:''}</div>`;
+}
+function run(){
+  const now=Date.now()/6e4;
+  ev=ev.filter(e=>e.t>now-180);
+  const w=+$('win').value,mn=+$('min').value,out=$('out');
+  const sub=ev.filter(e=>e.t>=now-w&&e.usd>=mn);
+  if(sub.length<3){out.innerHTML=`<div class="box">Đang thu thập… mới có ${sub.length} lệnh thanh lý trong khung này. Hạ ngưỡng hoặc chờ thêm vài phút.</div>`;return}
+  const last=sub[sub.length-1].t,mid=sub[0].t+(last-sub[0].t)/2;
+  const A=sub.filter(e=>e.t<=mid),B=sub.filter(e=>e.t>mid);
+  const L=sum(sub,'long'),S=sum(sub,'short'),d=dm(sub),d1=dm(A),d2=dm(B);
+  const maj=['BTC','ETH'].map(c=>{
+    const es=sub.filter(e=>e.c==c);if(!es.length)return null;
+    const le=es[es.length-1],fl=es.find(e=>e.side=='long'),fs=es.find(e=>e.side=='short');
+    let note;
+    if(le.side=='short'&&fl&&le.p>fl.p)note='short bị squeeze trên vùng long vừa bị quét → giá đã bật lại (reclaim)';
+    else if(le.side=='long'&&fs&&le.p<fs.p)note='long bị quét dưới vùng short vừa squeeze → mất đà, yếu';
+    else note=le.side=='long'?'long vẫn đang bị quét':'short đang bị squeeze';
+    return{c,L:sum(es,'long'),S:sum(es,'short'),p:le.p,note};
+  }).filter(Boolean);
+  const cas=[];
+  new Set(sub.map(e=>e.c)).forEach(c=>['long','short'].forEach(s=>{
+    const es=sub.filter(e=>e.c==c&&e.side==s);
+    if(es.length>=2&&es.every((e,i)=>!i||(s=='long'?e.p<=es[i-1].p:e.p>=es[i-1].p)))cas.push({c,s,n:es.length,usd:es.reduce((x,e)=>x+e.usd,0)});
+  }));
+  cas.sort((a,b)=>b.usd-a.usd);
+  const k=Math.min(3,Math.floor(sub.length/2));let sz='';
+  if(k>=2){const a=sub.slice(-k).reduce((x,e)=>x+e.usd,0)/k,b=sub.slice(0,-k).reduce((x,e)=>x+e.usd,0)/(sub.length-k);
+    sz=a<b*.6?'Lực thanh lý đang yếu dần (cạn nhiên liệu).':a>b*1.5?'Thanh lý đang tăng tốc.':'Cường độ thanh lý ổn định.';}
+  let tag,cls='',txt;
+  if(d>.3&&d2>.2){tag='Nghiêng TĂNG (đang squeeze)';cls='up';txt='Short liên tục bị nướng – người short đang chặn đầu xe lửa. Chưa thấy đảo chiều, nhưng đuổi long muộn dễ bị quét ngược khi short cạn.'}
+  else if(d<-.3&&d2<-.2){tag='Nghiêng GIẢM (đang cascade)';cls='dn';txt='Long liên tục bị quét – người bắt dao vẫn còn nhiều. Chờ long ngừng bị thanh lý rồi mới tính đảo chiều.'}
+  else if(d1<-.25&&d2>.25){tag='Quét long rồi squeeze short – chờ';txt='Đạp quét long rồi bật nướng short: quét hai đầu. Thiên hướng bật nhẹ, nhưng nhiên liệu squeeze phần lớn đã dùng, dễ đi ngang.'}
+  else if(d1>.25&&d2<-.25){tag='Quét short rồi quét long – chờ';cls='dn';txt='Kéo lên nướng short rồi quay đầu nướng long: lực kéo hụt, thiên hướng đảo xuống.'}
+  else{tag='Cân bằng / nhiễu – chưa có phe thắng';txt='Hai phe bị thanh lý đan xen, chưa có hướng rõ. Đứng ngoài hoặc chờ thêm.'}
+  const n=sub.length,conf=n>=15&&L+S>1.5e6?'cao':n>=8?'vừa':'thấp';
+  const bk={};sub.forEach(e=>{const b=Math.floor(e.t/5)*5;(bk[b]=bk[b]||[]).push(e)});
+  const keys=Object.keys(bk).map(Number).sort((a,b)=>a-b);
+  const mx=Math.max(...keys.map(b=>Math.max(sum(bk[b],'long'),sum(bk[b],'short'))));
+  const bars=keys.map(b=>{const l=sum(bk[b],'long'),s=sum(bk[b],'short');
+    return `<div class="bk"><span class="mut">${tm(b)}</span><div class="bkL"><div class="bl" style="width:${l/mx*100}%"></div></div><div><div class="bs" style="width:${s/mx*100}%"></div></div></div>`}).join('');
+  out.innerHTML=`${brk(sub,now)}
+  <div class="box verdict ${cls}"><b class="t">${tag}</b>${txt}<div class="mut" style="margin-top:6px">Độ tin cậy: ${conf} (${n} lệnh, ${f(L+S)}). ${sz} Lệnh cuối lúc ${tm(last)}.</div></div>
+  <div class="box"><h2>Tổng quan (${tm(sub[0].t)}–${tm(last)})</h2>
+    <div class="k"><span>Long bị thanh lý</span><b class="r">${f(L)}</b></div>
+    <div class="k"><span>Short bị thanh lý</span><b class="g">${f(S)}</b></div>
+    <div class="k"><span>Dịch chuyển: nửa đầu → nửa sau</span><b>${(d1*100).toFixed(0)}% → ${(d2*100).toFixed(0)}%</b></div>
+    <div class="mut">Âm = long bị nướng nhiều hơn, dương = short bị nướng nhiều hơn.</div></div>
+  ${maj.length?`<div class="box"><h2>BTC / ETH</h2>${maj.map(m=>`<div class="k"><span><b>${m.c}</b> long <span class="r">${f(m.L)}</span> / short <span class="g">${f(m.S)}</span></span><span class="mut">$${m.p}</span></div><div class="mut" style="padding:2px 0 6px">${m.note}</div>`).join('')}</div>`:''}
+  ${cas.length?`<div class="box"><h2>Cascade chưa dứt</h2>${cas.slice(0,6).map(x=>`<div class="k"><span><b>${x.c}</b> ${x.s=='long'?'<span class="r">bắt dao: long bị quét giá thấp dần</span>':'<span class="g">chặn đầu xe lửa: short bị quét giá cao dần</span>'}</span><span>${x.n} lệnh, ${f(x.usd)}</span></div>`).join('')}</div>`:''}
+  <div class="box"><h2>Theo từng 5 phút (đỏ = long, xanh = short)</h2>${bars}</div>`;
+}
+conn();run();
+setInterval(run,3000);
+setInterval(()=>{try{localStorage.setItem('liqlive',JSON.stringify(ev))}catch(e){}},10000);
+$('win').onchange=$('min').onchange=run;
+</script></body></html>
